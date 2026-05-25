@@ -4445,7 +4445,8 @@ function renderHighlight(){
     var PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
     var pa=a.split('/'),pb=b.split('/');
     return parseInt(pa[1])-parseInt(pb[1])||PT.indexOf(pa[0])-PT.indexOf(pb[0]);
-  }) : ALL_MONTHS; // respeita seletor de período
+  }) : ALL_MONTHS; // período selecionado para o resumo DRE
+  var hlEntryM = ALL_MONTHS; // sempre 12 meses para entrada manual de dados
   var REAL = REAL_MONTHS.slice().reverse(); // chronological: Jan,Fev,Mar
   var isReal = function(m){ return REAL.indexOf(m) >= 0; };
 
@@ -4537,7 +4538,7 @@ function renderHighlight(){
   // ── Seção 2: Dados Operacionais (entrada) ────────────────────
   h+='<div class="hl-section"><div class="hl-stitle">\u270f\ufe0f Dados Operacionais <span style="font-size:9px;font-weight:400;color:var(--accent2);font-family:IBM Plex Mono,monospace">edite os campos abaixo</span></div>';
   h+='<div class="hl-wrap"><table class="hl-tbl"><thead><tr><th>Indicador</th>';
-  hlAllM.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
+  hlEntryM.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
   h+='</tr></thead><tbody>';
 
   var secs=['estoque','vendas','caixa','financ'];
@@ -4549,10 +4550,10 @@ function renderHighlight(){
   function diasDoMes(mes){ var idx=_PT2.indexOf((mes||'').split('/')[0]); return _dpm[idx]||30; }
 
   secs.forEach(function(sec){
-    h+='<tr><td colspan="'+(hlAllM.length+1)+'" style="background:var(--surface2);font-size:9px;color:var(--muted);padding:4px 8px;letter-spacing:.6px">'+secLbls[sec]+'</td></tr>';
+    h+='<tr><td colspan="'+(hlEntryM.length+1)+'" style="background:var(--surface2);font-size:9px;color:var(--muted);padding:4px 8px;letter-spacing:.6px">'+secLbls[sec]+'</td></tr>';
     HL26_FIELDS.filter(function(f){return f.sec===sec;}).forEach(function(f){
       h+='<tr><td>'+f.lbl+'</td>';
-      hlAllM.forEach(function(m){
+      hlEntryM.forEach(function(m){
         var v=hl26Get(m,f.k);      // valor manual gravado
         var autoVal=null, autoSrc='';
 
