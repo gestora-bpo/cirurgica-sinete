@@ -759,7 +759,7 @@ body.light .trv-table tr.trv-n3 td:first-child{background:var(--surface)}
 
 <div class="main-toolbar">
   <label>Unidade</label>
-  <select class="bar-sel" id="unitSel" onchange="CU=this.value;render()"></select>
+  <select class="bar-sel" id="unitSel" onchange="CU=this.value;render();(function(){var h=document.getElementById('painel-highlight');if(h&&!h.classList.contains('hidden'))renderHighlight();var a=document.getElementById('painel-apresentacao');if(a&&!a.classList.contains('hidden'))renderApresentacao();})()"></select>
   <div class="toolbar-sep"></div>
   <label>Per&#237;odo</label>
   <select class="bar-sel" id="monthSel" onchange="_setMonthFromSel(this.value)"></select>
@@ -787,6 +787,7 @@ body.light .trv-table tr.trv-n3 td:first-child{background:var(--surface)}
   <button class="tab-btn" onclick="switchTab('matriz')">Matriz DRE</button>
   <button class="tab-btn" onclick="switchTab('variacoes')">Variações</button>
   <button class="tab-btn" onclick="switchTab('transversal')">Por Loja</button>
+  <button class="tab-btn" onclick="switchTab('breakeven')" title="Ponto de equilíbrio por unidade">&#9878; Breakeven</button>
   <button class="tab-btn" onclick="switchTab('rateio')">Rateio</button>
   <button class="tab-btn" onclick="switchTab('resultado-rateio')" title="Distribuição mensal dos itens de ajuste por unidade">&#128202; Resultado Rateios</button>
   <button class="tab-btn" onclick="switchTab('simulador')">Simulador</button>
@@ -1058,6 +1059,8 @@ function setProjMethod(method) {
   render();
   var pL=document.getElementById('painel-lojas');
   if(pL&&!pL.classList.contains('hidden')) renderLojas();
+  var pBE=document.getElementById('painel-breakeven');
+  if(pBE&&!pBE.classList.contains('hidden')) renderBreakeven();
   var pA=document.getElementById('painel-apresentacao');
   if(pA&&!pA.classList.contains('hidden')) renderApresentacao();
   var lbl={replica:'Réplica',media:'Média simples',ponderada:'Média ponderada',tendencia:'Tendência'};
@@ -1168,6 +1171,8 @@ function _setMonthFromSel(val){
   render();
   var pL=document.getElementById('painel-lojas');
   if(pL&&!pL.classList.contains('hidden')) renderLojas();
+  var pBE=document.getElementById('painel-breakeven');
+  if(pBE&&!pBE.classList.contains('hidden')) renderBreakeven();
   var _pr=document.getElementById('painel-rateio');
   if(_pr&&!_pr.classList.contains('hidden')) renderRateioPreview();
 }
@@ -1365,6 +1370,9 @@ function valCells(vals,rlMap,showDelta,showTotal){
   return out;
 }
 function buildDRE() {
+  // Atualizar rateio projetado antes de renderizar (usa RATEAVEL_ACTIVE já construído)
+  if (RATEAVEL_ACTIVE) calcProjRateio();
+
   // BE row uses last available month as primary, first as secondary
   var be0=calcBE(MONTHS[0]);
   var be1=MONTHS.length>1 ? calcBE(MONTHS[1]) : be0;
@@ -1438,7 +1446,7 @@ function buildDRE() {
     }
 
     // ── Transfer adjustment per month (only when specific unit selected) ──
-    var CASCADED_KEYS = [K_cmv, K_lb, K_ebit, K_rn];
+    var CASCADED_KEYS = [K_lb, K_ebit, K_rn];
     function tAdj(m) {
       if (CU === 'CONSOLIDADO' || !TRANSFERS.length) return 0;
       // Positive saldo (received goods) → CMV increases (more negative) → adj = -saldo
@@ -1505,13 +1513,42 @@ function buildDRE() {
     }
 
     if(s.type==='n1') {
+      // ── Pré-computar delta de rateio por N2 para este N1 ──────────────────
+      // Mesma lógica de arAdjMonth mas granularizada por n2.
+      var arDeltaByN2 = {};         // n2 → vals array (index = MONTHS)
+      var arN1Delta   = MONTHS.map(function(){return 0;});
+      if (CU !== 'CONSOLIDADO' && RATEAVEL_ACTIVE) {
+        var n2InNode = {};
+        (node.details||[]).forEach(function(d){ if(d.n2) n2InNode[d.n2]=true; });
+        MONTHS.forEach(function(m, mi) {
+          if (!RATEIO_CALC[m]) return;
+          (RATEIO_CALC[m].linhas||[]).forEach(function(linha) {
+            if (!n2InNode[linha.n2]) return;
+            var redistrib = linha.distrib[CU]||0;
+            var origCost  = 0;
+            (node.details||[]).forEach(function(d){
+              if (d.n2===linha.n2 && (d.n3||'')===(linha.n3||'')) origCost += (d.vals[m]||0);
+            });
+            var delta = redistrib - origCost;
+            if (!arDeltaByN2[linha.n2]) arDeltaByN2[linha.n2] = MONTHS.map(function(){return 0;});
+            arDeltaByN2[linha.n2][mi] += delta;
+            arN1Delta[mi] += delta;
+          });
+        });
+      }
+      var hasArN1 = arN1Delta.some(function(v){return Math.abs(v)>0.01;});
+      // Aplicar delta ao total N1 (vals já vem calculado acima)
+      if (hasArN1) vals = vals.map(function(v,i){return v+arN1Delta[i];});
+
       var trClass='rn1'+(hasDet?' clickable':'');
       // K_rb: editable in sim mode
       var rb_cells = (canSim&&s.key===K_rb)
         ? simEditCells(vals,'K_rb',false)
         : valCells(vals,rlMap,showDelta,showTotal);
       h+='<tr class="'+trClass+'" data-rid="'+rid+'">'
-        +'<td><span class="tog" data-tog="'+rid+'">'+s.lbl+'</span></td>'
+        +'<td><span class="tog" data-tog="'+rid+'">'+s.lbl
+        +(hasArN1?' <span style="color:var(--accent2);font-size:9px;vertical-align:middle" title="Inclui ajuste de rateio">\u21c4</span>':'')
+        +'</span></td>'
         +'<td class="nvlbl">N1</td>'
         +rb_cells+'</tr>';
 
@@ -1523,10 +1560,16 @@ function buildDRE() {
           if(!items.length) return;
           var n2id='n2'+rid+g2.replace(/[^a-z0-9]/gi,'_');
           var n2v=MONTHS.map(function(m){return items.reduce(function(a,d){return a+(d.vals[m]||0);},0);});
+          // Aplicar delta de rateio ao N2 se existir
+          var arN2d = arDeltaByN2[g2];
+          var hasArN2 = arN2d && arN2d.some(function(v){return Math.abs(v)>0.01;});
+          if (hasArN2) n2v = n2v.map(function(v,i){return v+arN2d[i];});
           var hasN3=s.n3&&items.some(function(d){return d.n3&&d.n3!=='';});
           var n2cls='rn2'+(ALL_EXPANDED?'':' hidden')+(hasN3?' clickable':'');
           h+='<tr class="'+n2cls+'" data-par="'+rid+'" data-rid="'+n2id+'" data-n2id="'+n2id+'">'
-            +'<td><span class="tog" data-tog="'+n2id+'">'+g2+'</span></td>'
+            +'<td><span class="tog" data-tog="'+n2id+'">'+g2
+            +(hasArN2?' <span style="color:var(--accent2);font-size:9px;vertical-align:middle" title="Inclui ajuste de rateio">\u21c4</span>':'')
+            +'</span></td>'
             +'<td class="nvlbl">N2</td>'
             +valCells(n2v,rlMap,showDelta,showTotal)+'</tr>';
           if(hasN3) {
@@ -1573,21 +1616,50 @@ function buildDRE() {
 
         // ── Linha de ajuste de transferências (após detalhes do CMV) ──
         if (s.key === K_cmv && CU !== 'CONSOLIDADO' && TRANSFERS.length) {
-          var adjVals = MONTHS.map(function(m){ return getTransferSaldo(CU, m); });
+          // Mostrar impacto no CMV: destino = custo adicional (neg), origem = redução de custo (pos)
+          var adjVals = MONTHS.map(function(m){ return -getTransferSaldo(CU, m); });
           var hasAnyAdj = adjVals.some(function(v){ return Math.abs(v) > 0.01; });
           if (hasAnyAdj) {
             var adjTotal = adjVals.reduce(function(a,b){return a+b;},0);
-            var adjCells = adjVals.map(function(v){
+            var adjCells = adjVals.map(function(v, i){
               var sign = v >= 0 ? '+' : '';
-              return '<td class="'+ cc(-v) +'">'+sign+fmt(v)+'</td>';
+              var td = '<td class="'+ cc(v) +'">'+sign+fmt(v)+'</td>';
+              if(AV_ON){
+                var rl = rlMap[MONTHS[i]]||1;
+                td += '<td class="avcell">'+(Math.abs(v)>0.005?pct(v/rl):'\u2014')+'</td>';
+              } else if(AH_ON&&i>0){
+                var base0=adjVals[0];
+                var ch=base0?((v-base0)/Math.abs(base0)):0;
+                td += '<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';
+              }
+              return td;
             }).join('');
-            if(AV_ON) adjCells = adjVals.map(function(){ return '<td class="avcell">—</td>'; }).join('');
             h += '<tr class="rn2" style="font-style:italic;opacity:.85" data-par="'+rid+'">'
               +'<td style="padding-left:28px"><span style="color:var(--accent2);font-size:11px">&#8645; Ajuste Transfer&ecirc;ncias</span></td>'
               +'<td class="nvlbl" style="color:var(--accent2)">TRF</td>'
               + adjCells
-              +(showDelta ? '<td style="color:var(--muted)">—</td>' : '')
+              +(showDelta ? '<td style="color:var(--muted)">\u2014</td>' : '')
               +(showTotal ? '<td class="td-total '+cc(-adjTotal)+'">'+fmt(adjTotal)+'</td>' : '')
+              +(showTotal&&AV_ON ? '<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+(rlMap[m]||0);},0)||1;return pct(adjTotal/rlS);})()+'</td>' : '')
+              +'</tr>';
+
+            // Linha totalizadora: CMV + Transferência
+            var cmvTrfVals = MONTHS.map(function(m, i){
+              return (vals[i]||0) + (-(getTransferSaldo(CU, m)));
+            });
+            var cmvTrfTotal = cmvTrfVals.reduce(function(a,b){return a+b;},0);
+            h += '<tr class="rn2" style="border-top:1px solid var(--border2);background:rgba(42,168,159,.06)" data-par="'+rid+'">'
+              +'<td style="padding-left:28px;font-weight:700"><span style="color:var(--accent);font-size:11px">= CMV c/ Transfer\u00eancias</span></td>'
+              +'<td class="nvlbl" style="color:var(--accent);font-size:9px">CMV</td>'
+              +cmvTrfVals.map(function(v,i){
+                var td='<td class="'+cc(v)+'" style="font-weight:700">'+fmt(v)+'</td>';
+                if(AV_ON){var rl=rlMap[MONTHS[i]]||1;td+='<td class="avcell">'+(Math.abs(v)>0.005?pct(v/rl):'\u2014')+'</td>';}
+                else if(AH_ON&&i>0){var base0=cmvTrfVals[0];var ch=base0?((v-base0)/Math.abs(base0)):0;td+='<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';}
+                return td;
+              }).join('')
+              +(showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
+              +(showTotal?'<td class="td-total '+cc(cmvTrfTotal)+'" style="font-weight:700">'+fmt(cmvTrfTotal)+'</td>':'')
+              +(showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+(rlMap[m]||0);},0)||1;return pct(cmvTrfTotal/rlS);})()+'</td>':'')
               +'</tr>';
           }
         }
@@ -1608,9 +1680,15 @@ function buildDRE() {
           h += '<tr class="rn2" style="font-style:italic;opacity:.85" data-par="'+rid+'">'
             +'<td style="padding-left:28px"><span style="color:var(--accent);font-size:11px">&#8644; Rateado: '+(g.nome||g.n2)+'</span></td>'
             +'<td class="nvlbl" style="color:var(--accent)">RAT</td>'
-            +credVals.map(function(v){return '<td class="'+(v<0?'pos':'neu')+'">'+fmt(v)+'</td>';}).join('')
-            +(showDelta?'<td style="color:var(--muted)">—</td>':'')
+            +credVals.map(function(v,i){
+              var td='<td class="'+(v<0?'pos':'neu')+'">'+fmt(v)+'</td>';
+              if(AV_ON){var rl=rlMap[MONTHS[i]]||1;td+='<td class="avcell">'+(Math.abs(v)>0.005?pct(v/rl):'\u2014')+'</td>';}
+              else if(AH_ON&&i>0){var base0=credVals[0];var ch=base0?((v-base0)/Math.abs(base0)):0;td+='<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';}
+              return td;
+            }).join('')
+            +(showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
             +(showTotal?'<td class="td-total '+cc(credTotal)+'">'+fmt(credTotal)+'</td>':'')
+            +(showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+(rlMap[m]||0);},0)||1;return pct(credTotal/rlS);})()+'</td>':'')
             +'</tr>';
         });
       }
@@ -1632,9 +1710,15 @@ function buildDRE() {
           h += '<tr class="rn2" style="font-style:italic;opacity:.85" data-par="'+rid+'">'
             +'<td style="padding-left:28px"><span style="color:var(--accent3);font-size:11px">&#8644; Rateio: '+(g.nome||g.n2)+'</span></td>'
             +'<td class="nvlbl" style="color:var(--accent3)">RAT</td>'
-            +debtVals.map(function(v){return '<td class="'+(v<0?'neg':'neu')+'">'+fmt(v)+'</td>';}).join('')
-            +(showDelta?'<td style="color:var(--muted)">—</td>':'')
+            +debtVals.map(function(v,i){
+              var td='<td class="'+(v<0?'neg':'neu')+'">'+fmt(v)+'</td>';
+              if(AV_ON){var rl=rlMap[MONTHS[i]]||1;td+='<td class="avcell">'+(Math.abs(v)>0.005?pct(v/rl):'\u2014')+'</td>';}
+              else if(AH_ON&&i>0){var base0=debtVals[0];var ch=base0?((v-base0)/Math.abs(base0)):0;td+='<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';}
+              return td;
+            }).join('')
+            +(showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
             +(showTotal?'<td class="td-total '+cc(debtTotal)+'">'+fmt(debtTotal)+'</td>':'')
+            +(showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+(rlMap[m]||0);},0)||1;return pct(debtTotal/rlS);})()+'</td>':'')
             +'</tr>';
         });
       }
@@ -1729,11 +1813,20 @@ function buildDRE() {
           h += '<tr class="rn2" style="opacity:.92">'
             + '<td style="padding-left:20px;font-style:italic"><span style="color:var(--accent2);font-size:11px">\u21c4\u00a0'+shortLabel+'</span></td>'
             + '<td class="nvlbl" style="color:var(--accent2);font-size:9px">ARat</td>'
-            + row.arVals.map(function(v){
-                return '<td class="'+cc(v)+'">'+(v>0.005?'+':'')+fmt(v)+'</td>';
+            + row.arVals.map(function(v, i){
+                var rl = tot(K_rl, MONTHS[i]) || 1;
+                var td = '<td class="'+cc(v)+'">'+(v>0.005?'+':'')+fmt(v)+'</td>';
+                if(AV_ON) td += '<td class="avcell">'+(v||rl!==1?pct(v/rl):'\u2014')+'</td>';
+                else if(AH_ON&&i>0){
+                  var base0=row.arVals[0];
+                  var ch=base0?((v-base0)/Math.abs(base0)):0;
+                  td += '<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';
+                }
+                return td;
               }).join('')
             + (showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
             + (showTotal?'<td class="td-total '+cc(arTotal)+'">'+(arTotal>0.005?'+':'')+fmt(arTotal)+'</td>':'')
+            + (showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+tot(K_rl,m);},0);return rlS?pct(arTotal/rlS):'\u2014';})()+'</td>':'')
             + '</tr>';
         });
 
@@ -1767,17 +1860,50 @@ function buildDRE() {
             h += '<tr class="rn2" style="opacity:.92">'
               + '<td style="padding-left:20px;font-style:italic"><span style="color:'+(isCredit?'var(--green)':'var(--accent3)')+';font-size:11px">\u21c4\u00a0'+gLabel+'</span></td>'
               + '<td class="nvlbl" style="color:var(--muted);font-size:9px">Rat</td>'
-              + grupoVals.map(function(v){
-                  return '<td class="'+cc(v)+'">'+(v>0.005?'+':'')+fmt(v)+'</td>';
+              + grupoVals.map(function(v, i){
+                  var rl = tot(K_rl, MONTHS[i]) || 1;
+                  var td = '<td class="'+cc(v)+'">'+(v>0.005?'+':'')+fmt(v)+'</td>';
+                  if(AV_ON) td += '<td class="avcell">'+(v||rl!==1?pct(v/rl):'\u2014')+'</td>';
+                  else if(AH_ON&&i>0){
+                    var base0=grupoVals[0];
+                    var ch=base0?((v-base0)/Math.abs(base0)):0;
+                    td += '<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';
+                  }
+                  return td;
                 }).join('')
               + (showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
               + (showTotal?'<td class="td-total '+cc(gTotal)+'">'+(gTotal>0.005?'+':'')+fmt(gTotal)+'</td>':'')
+              + (showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+tot(K_rl,m);},0);return rlS?pct(gTotal/rlS):'\u2014';})()+'</td>':'')
               + '</tr>';
           });
 
           if (gruposVisiveis.length) {
             h += '<tr class="rsep" style="border-top:1px solid var(--border2)"><td colspan="'+sc+'" style="font-size:9px;opacity:.5">Rateio manual \u2014 cr\u00e9dito credora + d\u00e9bito devedoras = zero</td></tr>';
           }
+        }
+
+        // ── Totalizador do grupo de ajustes de rateio ──────────────────────
+        var grpVals = MONTHS.map(function(m){ return (arTotalByMonth[m]||0)+(manTotalByMonth[m]||0); });
+        var grpTotal = grpVals.reduce(function(a,b){return a+b;},0);
+        if (grpVals.some(function(v){ return Math.abs(v)>0.01; })) {
+          h += '<tr class="rn2" style="border-top:1px solid var(--border2);background:rgba(57,203,193,.04)">'
+            + '<td style="padding-left:12px;font-weight:600;color:var(--muted2);font-size:11px">\u21c4\u00a0Total Ajustes de Rateio</td>'
+            + '<td class="nvlbl" style="font-size:9px;color:var(--muted)">Tot</td>'
+            + grpVals.map(function(v, i){
+                var rl = tot(K_rl, MONTHS[i]) || 1;
+                var td = '<td class="'+cc(v)+'" style="font-weight:600">'+(v>0.005?'+':'')+fmt(v)+'</td>';
+                if(AV_ON) td += '<td class="avcell">'+(v||rl!==1?pct(v/rl):'\u2014')+'</td>';
+                else if(AH_ON&&i>0){
+                  var base0=grpVals[0];
+                  var ch=base0?((v-base0)/Math.abs(base0)):0;
+                  td += '<td class="avcell '+cc(ch)+'">'+(ch>=0?'+':'')+(ch*100).toFixed(1)+'%</td>';
+                }
+                return td;
+              }).join('')
+            + (showDelta?'<td style="color:var(--muted)">\u2014</td>':'')
+            + (showTotal?'<td class="td-total '+cc(grpTotal)+'" style="font-weight:600">'+(grpTotal>0.005?'+':'')+fmt(grpTotal)+'</td>':'')
+            + (showTotal&&AV_ON?'<td class="avcell td-total">'+(function(){var rlS=MONTHS.reduce(function(s,m){return s+tot(K_rl,m);},0);return rlS?pct(grpTotal/rlS):'\u2014';})()+'</td>':'')
+            + '</tr>';
         }
 
         // Resultado Líquido Ajustado
@@ -2039,10 +2165,14 @@ function render(){updPills();renderKPI();buildDRE();renderCharts();renderDespGri
   var pRateio=document.getElementById('painel-rateio');
   var pApres=document.getElementById('painel-apresentacao');
   var pTrv=document.getElementById('painel-transversal');
+  var pHL=document.getElementById('painel-highlight');
+  var pBE=document.getElementById('painel-breakeven');
   if(pLojas&&!pLojas.classList.contains('hidden'))renderLojas();
   if(pRateio&&!pRateio.classList.contains('hidden'))renderRateioPreview();
   if(pApres&&!pApres.classList.contains('hidden'))renderApresentacao();
   if(pTrv&&!pTrv.classList.contains('hidden'))renderTransversal();
+  if(pHL&&!pHL.classList.contains('hidden'))renderHighlight();
+  if(pBE&&!pBE.classList.contains('hidden'))renderBreakeven();
 }
 function exportRateioExcel() {
   if (!RATEIO.grupos.length) { showToast('Nenhum grupo de rateio configurado.','err',3000); return; }
@@ -3249,21 +3379,61 @@ function _gerarPDF() {
     return delta;
   }
 
+  // ── AV% helpers ────────────────────────────────────────────────────────────
+  var rlByM = {};
+  meses.forEach(function(m){ rlByM[m] = getVal(K_rl, m) || 1; });
+  var rlTotal = meses.reduce(function(s,m){return s+(rlByM[m]||0);},0) || 1;
+  var showTot = meses.length > 1;
+
+  // Gera células val + AV% para um array de valores (indexado por meses)
+  function pdfCells(valsArr) {
+    var out = '';
+    valsArr.forEach(function(v, i) {
+      var isP = PROJ_MONTHS.indexOf(meses[i]) >= 0;
+      out += '<td'+(isP?' class="proj"':'')+'>'+fmtR(v)+'</td>';
+      out += '<td class="av'+(isP?' proj':'')+'" >'+fmtP(v/(rlByM[meses[i]]||1))+'</td>';
+    });
+    if (showTot) {
+      var sum = valsArr.reduce(function(a,b){return a+b;},0);
+      out += '<td class="tot">'+fmtR(sum)+'</td>';
+      out += '<td class="av tot">'+fmtP(sum/rlTotal)+'</td>';
+    }
+    return out;
+  }
+  // Gera células para linhas de % (margem) — valor já é percentual, coluna AV% vazia
+  function pdfPctCells(pctsArr, totPct) {
+    var out = '';
+    pctsArr.forEach(function(v, i) {
+      var isP = PROJ_MONTHS.indexOf(meses[i]) >= 0;
+      out += '<td'+(isP?' class="proj"':'')+'>'+fmtP(v)+'</td>';
+      out += '<td class="av'+(isP?' proj':'')+'"></td>';
+    });
+    if (showTot) {
+      out += '<td class="tot">'+fmtP(totPct)+'</td>';
+      out += '<td class="av tot"></td>';
+    }
+    return out;
+  }
+  // Número de colunas total (label + val+av por mês + total+av)
+  var nCols = 1 + meses.length*2 + (showTot?2:0);
+
   // Build table rows HTML
-  var colsHtml = meses.map(function(m){ return '<th>'+m+'</th>'; }).join('');
-  if (meses.length>1) colsHtml += '<th class="tot">Total</th>';
+  var colsHtml = meses.map(function(m){
+    var isP = PROJ_MONTHS.indexOf(m) >= 0;
+    return '<th'+(isP?' class="proj"':'')+'>'+m+'</th>'
+         + '<th class="av'+(isP?' proj':'')+'" title="% s/ Rec. Líq.">AV%</th>';
+  }).join('');
+  if (showTot) colsHtml += '<th class="tot">Total</th><th class="av tot">AV%</th>';
   var rowsHtml = '';
 
   DRE_PRINT.forEach(function(row){
     var vals = meses.map(function(m){ return getVal(row.key, m); });
-    var total = vals.reduce(function(a,b){return a+b;},0);
     var cls = row.bold?'bold':'';
     if(row.sep) cls+=' sep';
     var indent = row.lvl===1?' style="padding-left:20px"':'';
 
-    // For det rows, add N1 sub-lines
+    // For det rows, add N2 sub-lines
     if (row.det) {
-      // group by N1
       var details = (gnd(row.key).details||[]);
       var n1groups = {};
       var n1order = [];
@@ -3273,40 +3443,58 @@ function _gerarPDF() {
         if(!n1groups[n1]) { n1groups[n1]={}; n1order.push(n1); }
         meses.forEach(function(m){ n1groups[n1][m]=(n1groups[n1][m]||0)+(d.vals[m]||0); });
       });
-      // Print parent row
-      rowsHtml += '<tr class="'+cls+'"><td'+indent+'>'+row.lbl+'</td>';
-      vals.forEach(function(v){ rowsHtml+='<td>'+fmtR(v)+'</td>'; });
-      if(meses.length>1) rowsHtml+='<td class="tot">'+fmtR(total)+'</td>';
-      rowsHtml += '</tr>';
-      // Sub-rows
+
+      // ── Pré-computar delta de rateio por N2 ─────────────────────────────
+      var arDeltaByN2pdf = {};
+      var arN1DeltaPdf   = meses.map(function(){return 0;});
+      if (unit !== 'CONSOLIDADO' && RATEAVEL_ACTIVE) {
+        var n2InDet = {};
+        details.forEach(function(d){ if(d.n2) n2InDet[d.n2]=true; });
+        meses.forEach(function(m, mi) {
+          if (!RATEIO_CALC[m]) return;
+          (RATEIO_CALC[m].linhas||[]).forEach(function(linha) {
+            if (!n2InDet[linha.n2]) return;
+            var redistrib = linha.distrib[unit]||0;
+            var origCost  = 0;
+            details.forEach(function(d){
+              if (d.n2===linha.n2 && (d.n3||'')===(linha.n3||'')) origCost += (d.vals[m]||0);
+            });
+            var delta = redistrib - origCost;
+            if (!arDeltaByN2pdf[linha.n2]) arDeltaByN2pdf[linha.n2] = meses.map(function(){return 0;});
+            arDeltaByN2pdf[linha.n2][mi] += delta;
+            arN1DeltaPdf[mi] += delta;
+          });
+        });
+      }
+      var hasArN1pdf = arN1DeltaPdf.some(function(v){return Math.abs(v)>0.01;});
+      if (hasArN1pdf) vals = vals.map(function(v,i){return v+arN1DeltaPdf[i];});
+
+      // Print parent row (N1)
+      rowsHtml += '<tr class="'+cls+'"><td'+indent+'>'+row.lbl+(hasArN1pdf?' \u21c4':'')+'</td>'
+        + pdfCells(vals) + '</tr>';
+      // Sub-rows (N2)
       n1order.forEach(function(n1){
         var subVals = meses.map(function(m){ return n1groups[n1][m]||0; });
-        var subTot  = subVals.reduce(function(a,b){return a+b;},0);
+        var arN2dPdf = arDeltaByN2pdf[n1];
+        var hasArN2pdf = arN2dPdf && arN2dPdf.some(function(v){return Math.abs(v)>0.01;});
+        if (hasArN2pdf) subVals = subVals.map(function(v,i){return v+arN2dPdf[i];});
         if(subVals.every(function(v){return Math.abs(v)<0.01;})) return;
-        rowsHtml += '<tr class="sub"><td style="padding-left:28px">'+n1+'</td>';
-        subVals.forEach(function(v){ rowsHtml+='<td>'+fmtR(v)+'</td>'; });
-        if(meses.length>1) rowsHtml+='<td class="tot">'+fmtR(subTot)+'</td>';
-        rowsHtml += '</tr>';
+        rowsHtml += '<tr class="sub"><td style="padding-left:28px">'+n1+(hasArN2pdf?' \u21c4':'')+'</td>'
+          + pdfCells(subVals) + '</tr>';
       });
     } else {
-      rowsHtml += '<tr class="'+cls+'"><td'+indent+'>'+row.lbl+'</td>';
-      vals.forEach(function(v){ rowsHtml+='<td>'+fmtR(v)+'</td>'; });
-      if(meses.length>1) rowsHtml+='<td class="tot">'+fmtR(total)+'</td>';
-      rowsHtml += '</tr>';
+      rowsHtml += '<tr class="'+cls+'"><td'+indent+'>'+row.lbl+'</td>'
+        + pdfCells(vals) + '</tr>';
     }
   });
 
   // Margens
-  rowsHtml += '<tr class="mrghead"><td colspan="'+(meses.length+(meses.length>1?2:1))+'">Margens % sobre Receita L\u00edquida</td></tr>';
+  rowsHtml += '<tr class="mrghead"><td colspan="'+nCols+'">Margens % sobre Receita L\u00edquida</td></tr>';
   MRGS_PRINT.forEach(function(mr){
-    var vals = meses.map(function(m){ var rl=getVal(K_rl,m); return rl?getVal(mr.key,m)/rl:0; });
+    var pctsArr = meses.map(function(m){ var rl=getVal(K_rl,m); return rl?getVal(mr.key,m)/rl:0; });
     var rlS=meses.reduce(function(s,m){return s+getVal(K_rl,m);},0);
     var nS=meses.reduce(function(s,m){return s+getVal(mr.key,m);},0);
-    var totP=rlS?nS/rlS:0;
-    rowsHtml += '<tr class="mrg"><td>'+mr.lbl+'</td>';
-    vals.forEach(function(v){ rowsHtml+='<td>'+fmtP(v)+'</td>'; });
-    if(meses.length>1) rowsHtml+='<td class="tot">'+fmtP(totP)+'</td>';
-    rowsHtml += '</tr>';
+    rowsHtml += '<tr class="mrg"><td>'+mr.lbl+'</td>' + pdfPctCells(pctsArr, rlS?nS/rlS:0) + '</tr>';
   });
 
   // Rateio adjustments
@@ -3318,13 +3506,13 @@ function _gerarPDF() {
     });
   });
   if (arKeys.length && unit!=='CONSOLIDADO') {
-    rowsHtml += '<tr class="mrghead"><td colspan="'+(meses.length+(meses.length>1?2:1))+'">Ajustes de Rateio Auto-Calculados</td></tr>';
+    rowsHtml += '<tr class="mrghead"><td colspan="'+nCols+'">Ajustes de Rateio Auto-Calculados</td></tr>';
     var arTotByM={};
     meses.forEach(function(m){ arTotByM[m]=arAdjMonth(m); });
 
     arKeys.forEach(function(lk){
       var li={n2:lk.split('|')[0],n3:lk.split('|')[1]||''};
-      var vals=meses.map(function(m){
+      var arVals=meses.map(function(m){
         if(!RATEIO_CALC[m]) return 0;
         var linha=null;
         (RATEIO_CALC[m].linhas||[]).forEach(function(l){if(l.key===lk)linha=l;});
@@ -3333,30 +3521,28 @@ function _gerarPDF() {
         var o=0; Object.keys(RAW[unit]||{}).forEach(function(n1k){((RAW[unit][n1k]||{}).details||[]).forEach(function(d){if(d.n2===li.n2&&(d.n3||'')===li.n3)o+=(d.vals[m]||0);});});
         return r-o;
       });
-      var tot=vals.reduce(function(a,b){return a+b;},0);
       var shortL=(arMap[lk]||lk).length>45?(arMap[lk]||lk).slice(0,45)+'\u2026':(arMap[lk]||lk);
-      rowsHtml+='<tr class="sub"><td style="padding-left:16px">\u21c4 '+shortL+'</td>';
-      vals.forEach(function(v){rowsHtml+='<td>'+fmtR(v)+'</td>';});
-      if(meses.length>1) rowsHtml+='<td class="tot">'+fmtR(tot)+'</td>';
-      rowsHtml+='</tr>';
+      rowsHtml+='<tr class="sub"><td style="padding-left:16px">\u21c4 '+shortL+'</td>'
+        + pdfCells(arVals) + '</tr>';
     });
 
+    // Total do grupo de ajustes
+    var grpVals = meses.map(function(m){ return arTotByM[m]||0; });
+    rowsHtml+='<tr class="sub" style="font-weight:700;border-top:1px solid #ccc">'
+      +'<td style="padding-left:16px">\u21c4 Total Ajustes de Rateio</td>'
+      + pdfCells(grpVals) + '</tr>';
+
     // Resultado Ajustado
-    var adjVals=meses.map(function(m,i){ return getVal(K_rn,m)+(arTotByM[m]||0); });
-    var adjTot=adjVals.reduce(function(a,b){return a+b;},0);
-    rowsHtml+='<tr class="adj"><td>= Resultado L\u00edquido Ajustado</td>';
-    adjVals.forEach(function(v){rowsHtml+='<td>'+fmtR(v)+'</td>';});
-    if(meses.length>1) rowsHtml+='<td class="tot">'+fmtR(adjTot)+'</td>';
-    rowsHtml+='</tr>';
+    var adjVals=meses.map(function(m){ return getVal(K_rn,m)+(arTotByM[m]||0); });
+    rowsHtml+='<tr class="adj"><td>= Resultado L\u00edquido Ajustado</td>'
+      + pdfCells(adjVals) + '</tr>';
 
     // Margem ajustada
-    var adjMrg=meses.map(function(m){ var rl=getVal(K_rl,m); return rl?(getVal(K_rn,m)+arAdjMonth(m))/rl:0; });
+    var adjMrgPcts=meses.map(function(m){ var rl=getVal(K_rl,m); return rl?(getVal(K_rn,m)+arAdjMonth(m))/rl:0; });
     var rlS2=meses.reduce(function(s,m){return s+getVal(K_rl,m);},0);
-    var adjN=adjVals.reduce(function(a,b){return a+b;},0);
-    rowsHtml+='<tr class="mrg"><td>Margem L\u00edquida Ajustada</td>';
-    adjMrg.forEach(function(v){rowsHtml+='<td>'+fmtP(v)+'</td>';});
-    if(meses.length>1) rowsHtml+='<td class="tot">'+fmtP(rlS2?adjN/rlS2:0)+'</td>';
-    rowsHtml+='</tr>';
+    var adjSum=adjVals.reduce(function(a,b){return a+b;},0);
+    rowsHtml+='<tr class="mrg"><td>Margem L\u00edquida Ajustada</td>'
+      + pdfPctCells(adjMrgPcts, rlS2?adjSum/rlS2:0) + '</tr>';
   }
 
   CU = oldCU; // restore
@@ -3365,29 +3551,35 @@ function _gerarPDF() {
     + '<title>DRE \u2014 '+unitLabel+'</title>'
     + '<style>'
     + '@page{size:A4 landscape;margin:15mm 12mm}'
-    + 'body{font-family:Arial,Helvetica,sans-serif;font-size:9pt;color:#1a1a2e;margin:0}'
+    + 'body{font-family:Arial,Helvetica,sans-serif;font-size:8.5pt;color:#1a1a2e;margin:0}'
     + '.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1a1a2e;padding-bottom:8px;margin-bottom:12px}'
-    + '.logo-area h1{font-size:16pt;font-weight:900;color:#00bbb4;margin:0}' 
+    + '.logo-area h1{font-size:16pt;font-weight:900;color:#00bbb4;margin:0}'
     + '.logo-area h1 span{color:#1a1a2e}'
     + '.logo-area p{font-size:8pt;color:#666;margin:2px 0 0}'
     + '.meta{text-align:right;font-size:8pt;color:#444}'
     + '.meta strong{font-size:11pt;color:#1a1a2e;display:block}'
     + '.meta .periodo{color:#00bbb4;font-weight:700;font-size:9pt}'
-    + 'table{width:100%;border-collapse:collapse;font-size:8.5pt}'
-    + 'th{background:#1a1a2e;color:#fff;padding:5px 8px;text-align:right;font-size:8pt;white-space:nowrap}'
-    + 'th:first-child{text-align:left}'
-    + 'td{padding:3px 8px;border-bottom:1px solid #e8eaf0;text-align:right;white-space:nowrap}'
+    + 'table{width:100%;border-collapse:collapse;font-size:7.5pt}'
+    + 'th{background:#1a1a2e;color:#fff;padding:4px 6px;text-align:right;font-size:7pt;white-space:nowrap}'
+    + 'th:first-child{text-align:left;min-width:180px}'
+    + 'th.av{background:#2a3050;font-size:6.5pt;color:#aab;padding:4px 4px}'
+    + 'td{padding:3px 6px;border-bottom:1px solid #e8eaf0;text-align:right;white-space:nowrap}'
     + 'td:first-child{text-align:left}'
+    + 'td.av{color:#778;font-size:7pt;padding:3px 4px}'
+    + 'td.proj{color:#7a5000}'
+    + 'td.av.proj{color:#9a7020}'
     + 'tr:hover td{background:#f5f8ff}'
     + 'tr.bold td{font-weight:700;background:#f0f4ff}'
     + 'tr.sep td{border-top:2px solid #1a1a2e}'
-    + 'tr.sub td{color:#666;font-size:8pt}'
+    + 'tr.sub td{color:#555;font-size:7pt}'
     + 'tr.sub td:first-child{padding-left:20px}'
+    + 'tr.sub td.av{color:#999}'
     + 'tr.mrg td{color:#007a77;font-style:italic}'
-    + 'tr.mrghead td{background:#e8f7f7;color:#007a77;font-weight:700;font-size:8pt;padding:4px 8px;letter-spacing:.5px}'
+    + 'tr.mrghead td{background:#e8f7f7;color:#007a77;font-weight:700;font-size:7.5pt;padding:4px 6px;letter-spacing:.5px}'
     + 'tr.adj td{font-weight:900;color:#00bbb4;border-top:2px solid #00bbb4;background:#f0fffe}'
     + 'td.tot{font-weight:700;border-left:2px solid #c8d0e0;background:#f8f9ff}'
-    + '.footer{margin-top:12px;font-size:7.5pt;color:#999;text-align:right;border-top:1px solid #ddd;padding-top:6px}'
+    + 'td.av.tot{background:#f8f9ff;border-left:1px solid #dde}'
+    + '.footer{margin-top:12px;font-size:7pt;color:#999;text-align:right;border-top:1px solid #ddd;padding-top:6px}'
     + '</style></head><body>'
     + '<div class="header">'
     + '<div class="logo-area"><h1>Cir\u00fargica<span>Sinete</span></h1>'
@@ -3402,7 +3594,7 @@ function _gerarPDF() {
     + '<div class="footer">Cirúrgica Sinete \u2022 Dashboard DRE 2026 \u2022 Documento gerado automaticamente</div>'
     + '</body></html>';
 
-  var w = window.open('','_blank','width=1100,height=700');
+  var w = window.open('','_blank','width=1200,height=750');
   w.document.write(printHtml);
   w.document.close();
   w.focus();
@@ -3489,10 +3681,17 @@ function calcAutoRateio(mes) {
 
     if (Math.abs(pool) < 0.005) return;
 
-    // Redistribuir para todas as unidades por % faturamento
+    // Redistribuir: se escopo configurado, apenas entre as unidades do escopo;
+    // caso contrário, para todas as unidades (comportamento geral).
+    var distribUnits = (scopeUnits && scopeUnits.length)
+      ? units.filter(function(u){ return scopeUnits.indexOf(u) >= 0; })
+      : units;
+    var distribFatTotal = distribUnits.reduce(function(s,u){ return s + (fat[u]||0); }, 0);
+
     var distrib = {};
     units.forEach(function(u) {
-      distrib[u] = fatTotal > 0 ? pool * (fat[u] / fatTotal) : 0;
+      var inDist = distribUnits.indexOf(u) >= 0;
+      distrib[u] = (inDist && distribFatTotal > 0) ? pool * (fat[u] / distribFatTotal) : 0;
     });
 
     linhas.push({ key: key, n2: n2, n3: n3, label: label, pool: pool, distrib: distrib, scopeUnits: scopeUnits });
@@ -3509,27 +3708,31 @@ function renderResultadoRateio() {
   var info = document.getElementById('resrateioInfo');
   var cont = document.getElementById('resrateioContent');
 
-  // Popular seletor com REAL_MONTHS — sempre reconstruir para refletir novos dados carregados
+  // Popular seletor com REAL_MONTHS + PROJ_MONTHS — sempre reconstruir para refletir novos dados carregados
   var prevMes = sel.value;
   sel.innerHTML = '';
-  var rMeses = REAL_MONTHS.slice().sort(function(a,b){
+  var sortFn = function(a,b){
     var PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
     var pa=a.split('/'), pb=b.split('/');
     var ya=parseInt(pa[1]), yb=parseInt(pb[1]);
     var ma=PT.indexOf(pa[0]), mb=PT.indexOf(pb[0]);
     return ya!==yb ? ya-yb : ma-mb;
-  });
-  rMeses.forEach(function(m) {
+  };
+  var rMeses = REAL_MONTHS.slice().sort(sortFn);
+  var pMeses = PROJ_MONTHS.slice().sort(sortFn);
+  var allMeses = rMeses.concat(pMeses);
+  allMeses.forEach(function(m) {
+    var isP = PROJ_MONTHS.indexOf(m) >= 0;
     var o = document.createElement('option');
-    o.value = m; o.textContent = m;
+    o.value = m; o.textContent = m + (isP ? ' \u25b8' : '');
     sel.appendChild(o);
   });
   // Preservar seleção anterior se ainda existir, senão ir para o mais recente
-  if (prevMes && rMeses.indexOf(prevMes) >= 0) sel.value = prevMes;
+  if (prevMes && allMeses.indexOf(prevMes) >= 0) sel.value = prevMes;
   else if (rMeses.length) sel.value = rMeses[rMeses.length - 1];
 
   var mes = sel.value;
-  if (!mes) { cont.innerHTML = '<div style="padding:24px;color:var(--muted)">Nenhum mês realizado disponível.</div>'; return; }
+  if (!mes) { cont.innerHTML = '<div style="padding:24px;color:var(--muted)">Nenhum mês disponível.</div>'; return; }
 
   // Verificar se há linhas rateáveis configuradas
   var nRateavel = RATEAVEL_ACTIVE ? Object.keys(RATEAVEL_ACTIVE).filter(function(k){ return RATEAVEL_ACTIVE[k]; }).length : 0;
@@ -3543,12 +3746,17 @@ function renderResultadoRateio() {
     return;
   }
 
-  var jaGravado = !!RATEIO_CALC[mes];
+  var isProj = PROJ_MONTHS.indexOf(mes) >= 0;
+  var jaGravado = !isProj && !!RATEIO_CALC[mes] && !!RATEIO_CALC[mes].gravado;
+  var isAutoProj = isProj && !!RATEIO_CALC[mes];
   var result = _arLastResult && _arLastResult.mes === mes ? _arLastResult : null;
 
   // ── STATUS BADGE ──
   var statusHtml = '';
-  if (jaGravado) {
+  if (isAutoProj) {
+    statusHtml = '<span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:6px;background:rgba(57,203,193,.1);border:1px solid rgba(57,203,193,.3);color:var(--accent);font-family:\'IBM Plex Mono\',monospace;font-size:10px;font-weight:600">'
+      + '\u25b8 Projetado \u2014 auto</span>';
+  } else if (jaGravado) {
     var ts = RATEIO_CALC[mes].ts;
     var d = ts ? new Date(ts) : null;
     var tsStr = d ? d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}) : '';
@@ -3561,30 +3769,35 @@ function renderResultadoRateio() {
 
   // ── BOTÕES DE AÇÃO ──
   var btns = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px">'
-    + statusHtml
-    + '<button class="data-action-btn" onclick="_arCalcular()" style="margin-left:8px">'
-    + (jaGravado ? '\u21bb Recalcular' : '\u26a1 Calcular Rateio') + '</button>';
-  if (result && result.linhas.length && !jaGravado) {
-    btns += '<button class="data-action-btn" onclick="_arConfirmar()" style="border-color:var(--green);color:var(--green)">\u2713 Confirmar e Gravar</button>';
+    + statusHtml;
+  if (!isProj) {
+    btns += '<button class="data-action-btn" onclick="_arCalcular()" style="margin-left:8px">'
+      + (jaGravado ? '\u21bb Recalcular' : '\u26a1 Calcular Rateio') + '</button>';
+    if (result && result.linhas.length && !jaGravado) {
+      btns += '<button class="data-action-btn" onclick="_arConfirmar()" style="border-color:var(--green);color:var(--green)">\u2713 Confirmar e Gravar</button>';
+    }
+  } else {
+    btns += '<span style="font-size:10px;color:var(--muted);font-family:\'IBM Plex Mono\',monospace;margin-left:8px">'
+      + 'R\u00e9plica proporcional do \u00faltimo m\u00eas real \u2014 recalculado automaticamente</span>';
   }
-  btns += '<span style="font-size:11px;color:var(--muted);font-family:\'IBM Plex Mono\',monospace">' + nRateavel + ' linha' + (nRateavel!==1?'s':'') + ' rate\u00e1veis configuradas</span>';
+  btns += '<span style="font-size:11px;color:var(--muted);font-family:\'IBM Plex Mono\',monospace' + (isProj ? '' : '') + '">' + nRateavel + ' linha' + (nRateavel!==1?'s':'') + ' rate\u00e1veis configuradas</span>';
   btns += '</div>';
 
   // ── TABELA DE PREVIEW ──
+  var AR_SHORT = {
+    '01':'Mooca','02':'A.Mooca','03':'V.Matilde','04':'Santana',
+    '05':'Dep\u00f3sito','06':'Sapopemba','07':'Santos','08':'Ipiranga',
+    '09':'Para\u00edso','10':'Bel\u00e9m','11':'Tatua\u00e9','12':'Osw.Cruz',
+    '14':'Site','15':'Quarent.','16':'Distrib.','17':'Laguna',
+    '18':'C.Lisboa','ESC':'Escrit.','ESC2':'Financ.'
+  };
+
   var tableHtml = '';
-  var dataToShow = result || (jaGravado ? RATEIO_CALC[mes] : null);
+  var dataToShow = result || (RATEIO_CALC[mes] ? RATEIO_CALC[mes] : null);
 
   if (dataToShow && dataToShow.linhas && dataToShow.linhas.length) {
     var units = LOJAS_UNITS.filter(function(u){ return u !== 'CONSOLIDADO'; });
     var linhas = dataToShow.linhas;
-
-    var AR_SHORT = {
-      '01':'Mooca','02':'A.Mooca','03':'V.Matilde','04':'Santana',
-      '05':'Dep\u00f3sito','06':'Sapopemba','07':'Santos','08':'Ipiranga',
-      '09':'Para\u00edso','10':'Bel\u00e9m','11':'Tatua\u00e9','12':'Osw.Cruz',
-      '14':'Site','15':'Quarent.','16':'Distrib.','17':'Laguna',
-      '18':'C.Lisboa','ESC':'Escrit.','ESC2':'Financ.'
-    };
 
     tableHtml += '<div class="resrateio-wrap"><table class="resrateio-table">';
     // Header
@@ -3606,7 +3819,7 @@ function renderResultadoRateio() {
       var scopeInfo = '';
       if (l.scopeUnits && l.scopeUnits.length) {
         var scopeNames = l.scopeUnits.map(function(u){ return AR_SHORT[u]||u; }).join(', ');
-        scopeInfo = '<div style="font-size:9px;color:var(--accent2);opacity:.7;margin-top:1px">\u25b8 pool: '+scopeNames+'</div>';
+        scopeInfo = '<div style="font-size:9px;color:var(--accent2);opacity:.7;margin-top:1px">\u25b8 escopo: '+scopeNames+'</div>';
       }
       tableHtml += '<tr class="resrateio-item-row"><td class="col-label" title="' + l.label + '">' + shortLabel + scopeInfo + '</td>';
       tableHtml += '<td class="col-total">' + _arFmt(l.pool) + '</td>';
@@ -3633,7 +3846,7 @@ function renderResultadoRateio() {
         + ' \u2022 Unidades centrais exclu\u00eddas do denominador caso fat=0'
         + '</div>';
     }
-  } else if (result === null && !jaGravado) {
+  } else if (result === null && !jaGravado && !isAutoProj) {
     tableHtml = '<div style="padding:20px;color:var(--muted);font-size:12px;text-align:center">'
       + 'Clique em <b>\u26a1 Calcular Rateio</b> para apurar a distribui\u00e7\u00e3o de ' + mes
       + '</div>';
@@ -3677,7 +3890,10 @@ function renderResultadoRateio() {
       tableHtml += '<div style="margin-top:14px;margin-bottom:6px;font-size:11px;font-weight:600;color:var(--accent2)">' + label + '</div>';
       tableHtml += '<div class="resrateio-wrap" style="margin-bottom:16px"><table class="resrateio-table">';
       tableHtml += '<thead><tr><th class="col-label">Unidade</th>';
-      calcMeses.forEach(function(m){ tableHtml += '<th>' + m + '</th>'; });
+      calcMeses.forEach(function(m){
+        var iP = PROJ_MONTHS.indexOf(m) >= 0;
+        tableHtml += '<th' + (iP ? ' style="color:var(--accent3)"' : '') + '>' + m + (iP ? ' \u25b8' : '') + '</th>';
+      });
       tableHtml += '<th class="col-total">Total</th></tr></thead><tbody>';
 
       units2.forEach(function(u) {
@@ -3749,6 +3965,28 @@ function _arConfirmar() {
   _arLastResult = null;
   renderResultadoRateio();
   showToast('\u2713 Rateio de ' + mes + ' gravado com sucesso', 'ok', 3000);
+}
+
+// Calcula e armazena rateio automático para todos os meses projetados.
+// Chamado antes de buildDRE() para que arAdjMonth() leia os valores atualizados.
+function calcProjRateio() {
+  if (!RATEAVEL_ACTIVE || !Object.keys(RATEAVEL_ACTIVE).some(function(k){ return RATEAVEL_ACTIVE[k]; })) return;
+  PROJ_MONTHS.forEach(function(m) {
+    // Não sobrescreve meses gravados manualmente (não deveria existir, mas segurança)
+    if (RATEIO_CALC[m] && RATEIO_CALC[m].gravado && !RATEIO_CALC[m].projetado) return;
+    var result = calcAutoRateio(m);
+    if (result && result.linhas.length) {
+      RATEIO_CALC[m] = {
+        ts: Date.now(),
+        linhas: result.linhas,
+        fatTotal: result.fatTotal,
+        fat: result.fat,
+        projetado: true
+      };
+    } else {
+      if (RATEIO_CALC[m] && RATEIO_CALC[m].projetado) delete RATEIO_CALC[m];
+    }
+  });
 }
 
 function _arExportSintetico() {
@@ -4203,12 +4441,18 @@ function renderHighlight(){
   if(!el)return;
   if(_hlCV26){try{_hlCV26.destroy();}catch(e){}}
 
-  var MONTHS=ALL_MONTHS; // Jan/26-Dez/26 from DRE
-  var REAL=REAL_MONTHS.slice().reverse(); // chronological: Jan,Fev,Mar
-  var isReal=function(m){return REAL.indexOf(m)>=0;};
+  var hlAllM = MONTHS.length > 0 ? MONTHS.slice().sort(function(a,b){
+    var PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    var pa=a.split('/'),pb=b.split('/');
+    return parseInt(pa[1])-parseInt(pb[1])||PT.indexOf(pa[0])-PT.indexOf(pb[0]);
+  }) : ALL_MONTHS; // respeita seletor de período
+  var REAL = REAL_MONTHS.slice().reverse(); // chronological: Jan,Fev,Mar
+  var isReal = function(m){ return REAL.indexOf(m) >= 0; };
 
-  // DRE-derived values (consolidated)
-  function dreGet(k,m){return ((RAW['CONSOLIDADO']||{})[k]||{}).total&&((RAW['CONSOLIDADO']||{})[k].total[m])||0;}
+  // Use selected unit if not CONSOLIDADO; for network sections always use CONSOLIDADO
+  var hlUnit = CU; // respects unit selector
+  function dreGet(k,m){ return ((RAW[hlUnit]||{})[k]||{}).total&&((RAW[hlUnit]||{})[k].total[m])||0; }
+  function dreGetC(k,m){ return ((RAW['CONSOLIDADO']||{})[k]||{}).total&&((RAW['CONSOLIDADO']||{})[k].total[m])||0; } // consolidado for network sections
 
   // ── KPI cards (latest real month) ──────────────────────────
   var lastR=REAL[REAL.length-1]; // most recent real month
@@ -4217,20 +4461,23 @@ function renderHighlight(){
   var tmLast=hl26Get(lastR,'tm'), diasLast=hl26Get(lastR,'estDias');
   var dividaLast=hl26Get(lastR,'dividaRest'), saldoLast=hl26Get(lastR,'caixaSaldo');
 
+  var unitLabel = hlUnit === 'CONSOLIDADO' ? 'consolidado' : (LOJAS_NAMES[hlUnit]||hlUnit);
   var h='<div class="hl-panel">';
-  h+='<div class="hl-hdr"><div><div class="hl-title">\ud83d\udcca Highlight Financeiro 2026</div>';
-  h+='<div class="hl-subtitle">'+REAL[0]+' \u2013 '+lastR+' realizados \u00b7 '+MONTHS.filter(function(m){return !isReal(m);}).length+' meses para entrada</div></div>';
+  h+='<div class="hl-hdr"><div><div class="hl-title">&#128202; Highlight Financeiro 2026</div>';
+  h+='<div class="hl-subtitle">'+REAL[0]+' \u2013 '+lastR+' realizados \u00b7 '
+    +hlAllM.filter(function(m){return !isReal(m);}).length+' meses para entrada'
+    +(hlUnit!=='CONSOLIDADO' ? ' \u00b7 '+unitLabel : '')+'</div></div>';
   h+='<button class="data-action-btn" onclick="hl26ClearAll()" style="font-size:9px;height:24px;color:var(--muted)">Limpar entradas</button></div>';
 
   h+='<div class="hl-kpi-row">';
   // Receita Líquida
   h+='<div class="hl-kpi" style="border-color:rgba(57,203,193,.3)"><div class="hl-kpi-lbl">Rec. Líquida '+lastR+'</div>';
   h+='<div class="hl-kpi-val" style="color:var(--accent)">'+fmtHL(rl,'R$')+'</div>';
-  h+='<div class="hl-kpi-sub" style="color:var(--muted)">DRE · consolidado</div></div>';
+  h+='<div class="hl-kpi-sub" style="color:var(--muted)">DRE \u00b7 '+unitLabel+'</div></div>';
   // Resultado Líquido
   h+='<div class="hl-kpi" style="border-color:'+(rn>=0?'rgba(57,203,193,.3)':'rgba(239,68,68,.3)')+'"><div class="hl-kpi-lbl">Resultado '+lastR+'</div>';
   h+='<div class="hl-kpi-val '+ccHL(rn)+'">'+fmtHL(rn,'R$')+'</div>';
-  h+='<div class="hl-kpi-sub '+ccHL(margem)+'">'+pHL(margem)+' margem líq.</div></div>';
+  h+='<div class="hl-kpi-sub '+ccHL(margem)+'">'+pHL(margem)+' margem l\u00edq.</div></div>';
   // TM
   h+='<div class="hl-kpi"><div class="hl-kpi-lbl">Ticket Médio '+lastR+'</div>';
   h+='<div class="hl-kpi-val">'+(tmLast?'R$'+parseFloat(tmLast).toFixed(2).replace('.',','):'\u2014')+'</div>';
@@ -4258,7 +4505,7 @@ function renderHighlight(){
   // ── Seção 1: Resultado Financeiro (DRE) ──────────────────────
   h+='<div class="hl-section"><div class="hl-stitle">\ud83d\udcc9 Resultado Financeiro \u2014 Consolidado <span style="font-size:9px;font-weight:400;color:var(--accent);font-family:IBM Plex Mono,monospace">extraído da DRE</span></div>';
   h+='<div class="hl-wrap"><table class="hl-tbl"><thead><tr><th>Indicador</th>';
-  MONTHS.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
+  hlAllM.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
   h+='</tr></thead><tbody>';
   var dreRows=[
     {lbl:'Receita Bruta',k:K_rb},
@@ -4271,7 +4518,7 @@ function renderHighlight(){
   ];
   dreRows.forEach(function(r){
     h+='<tr class="'+(r.cls||'')+'"><td>'+r.lbl+'</td>';
-    MONTHS.forEach(function(m){
+    hlAllM.forEach(function(m){
       var v=dreGet(r.k,m);
       h+='<td class="hl-dre '+ccHL(v)+'">'+fmtHL(v,'R$')+'</td>';
     });
@@ -4279,7 +4526,7 @@ function renderHighlight(){
   });
   // Margem %
   h+='<tr><td style="color:var(--muted2)">Margem Líquida</td>';
-  MONTHS.forEach(function(m){
+  hlAllM.forEach(function(m){
     var rl2=dreGet(K_rl,m),rn2=dreGet(K_rn,m);
     var mg=rl2>0?rn2/rl2:null;
     h+='<td class="hl-dre '+(mg!==null?ccHL(mg):'')+'">'+pHL(mg)+'</td>';
@@ -4290,24 +4537,67 @@ function renderHighlight(){
   // ── Seção 2: Dados Operacionais (entrada) ────────────────────
   h+='<div class="hl-section"><div class="hl-stitle">\u270f\ufe0f Dados Operacionais <span style="font-size:9px;font-weight:400;color:var(--accent2);font-family:IBM Plex Mono,monospace">edite os campos abaixo</span></div>';
   h+='<div class="hl-wrap"><table class="hl-tbl"><thead><tr><th>Indicador</th>';
-  MONTHS.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
+  hlAllM.forEach(function(m){h+='<th class="'+(isReal(m)?'hl-real-h':'hl-proj-h')+'">'+m+'</th>';});
   h+='</tr></thead><tbody>';
 
   var secs=['estoque','vendas','caixa','financ'];
   var secLbls={estoque:'── Estoque e Reposição',vendas:'── Vendas Operacional',caixa:'── Fluxo de Caixa',financ:'── Inadimplência e Dívida'};
+
+  // Helper: dias no mês a partir de "Mmm/AA"
+  var _dpm=[31,28,31,30,31,30,31,31,30,31,30,31];
+  var _PT2=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+  function diasDoMes(mes){ var idx=_PT2.indexOf((mes||'').split('/')[0]); return _dpm[idx]||30; }
+
   secs.forEach(function(sec){
-    h+='<tr><td colspan="'+(MONTHS.length+1)+'" style="background:var(--surface2);font-size:9px;color:var(--muted);padding:4px 8px;letter-spacing:.6px">'+secLbls[sec]+'</td></tr>';
+    h+='<tr><td colspan="'+(hlAllM.length+1)+'" style="background:var(--surface2);font-size:9px;color:var(--muted);padding:4px 8px;letter-spacing:.6px">'+secLbls[sec]+'</td></tr>';
     HL26_FIELDS.filter(function(f){return f.sec===sec;}).forEach(function(f){
       h+='<tr><td>'+f.lbl+'</td>';
-      MONTHS.forEach(function(m){
-        var v=hl26Get(m,f.k);
-        var inp='<input type="number" class="hl-inp'+(f.unit==='%'?' hl-inp-pct':'')+'" ';
-        inp+='placeholder="\u2014" ';
-        inp+='value="'+(v!==null?v:'')+'" ';
-        inp+='data-m="'+m+'" data-k="'+f.k+'" ';
-        inp+='onchange="hl26Set(this.dataset.m,this.dataset.k,this.value===\'\'?null:parseFloat(this.value));renderHighlight();" ';
-        inp+='>';
-        h+='<td>'+inp+'</td>';
+      hlAllM.forEach(function(m){
+        var v=hl26Get(m,f.k);      // valor manual gravado
+        var autoVal=null, autoSrc='';
+
+        // ── Auto: Estoque Custo ──────────────────────────────────
+        if(f.k==='estCusto'){
+          var rawEst=dreGet('04 - Estoque (Custo Médio)',m);
+          if(rawEst&&rawEst>0){autoVal=rawEst;autoSrc='Excel';}
+        }
+        // ── Auto: Dias de Estoque ────────────────────────────────
+        if(f.k==='estDias'){
+          var estC=v!==null?v:(hl26Get(m,'estCusto')!==null?hl26Get(m,'estCusto'):dreGet('04 - Estoque (Custo Médio)',m));
+          var cmvM=Math.abs(dreGet(K_cmv,m));
+          var dM=diasDoMes(m);
+          if(estC&&estC>0&&cmvM>0){autoVal=Math.round(estC/(cmvM/dM));autoSrc='calc';}
+        }
+        // ── Auto: Ticket Médio ───────────────────────────────────
+        if(f.k==='tm'){
+          var clts=hl26Get(m,'clientes');
+          var rl2=dreGet(K_rl,m);
+          if(clts&&clts>0&&rl2>0){autoVal=rl2/clts;autoSrc='calc';}
+        }
+
+        if(autoVal!==null&&v===null){
+          // Valor automático — mostra calculado + input menor para substituição
+          var fmtAuto=f.unit==='d'?autoVal.toFixed(0)+' d'
+            :f.unit==='%'?autoVal.toFixed(1)+'%'
+            :'R$\u00a0'+(autoVal>=1000?(autoVal/1000).toFixed(1)+'k':Math.round(autoVal).toLocaleString('pt-BR'));
+          h+='<td style="vertical-align:top;padding:3px 6px">'
+            +'<div style="color:var(--accent);font-weight:700;font-size:11px;white-space:nowrap">'
+            +fmtAuto
+            +'<span style="font-size:8px;color:var(--muted2);font-family:\'IBM Plex Mono\',monospace;margin-left:4px">\u27f3 '+autoSrc+'</span>'
+            +'</div>'
+            +'<input type="number" class="hl-inp" style="margin-top:2px;font-size:9px;height:18px;opacity:.6" '
+            +'placeholder="substituir" value="" data-m="'+m+'" data-k="'+f.k+'" '
+            +'onchange="hl26Set(this.dataset.m,this.dataset.k,this.value===\'\'?null:parseFloat(this.value));renderHighlight();" '
+            +'></td>';
+        } else {
+          var inp='<input type="number" class="hl-inp'+(f.unit==='%'?' hl-inp-pct':'')+'" ';
+          inp+='placeholder="\u2014" ';
+          inp+='value="'+(v!==null?v:'')+'" ';
+          inp+='data-m="'+m+'" data-k="'+f.k+'" ';
+          inp+='onchange="hl26Set(this.dataset.m,this.dataset.k,this.value===\'\'?null:parseFloat(this.value));renderHighlight();" ';
+          inp+='>';
+          h+='<td>'+inp+'</td>';
+        }
       });
       h+='</tr>';
     });
@@ -4351,8 +4641,13 @@ function renderApresentacao() {
 }
 function _renderApresentacao() {
   APRES_SLIDE = 0;
-  // Usa o mês selecionado pelo filtro quando há um único mês, senão o último real
-  var lastM = (MONTHS.length===1) ? MONTHS[0] : REAL_MONTHS[0];
+  // Usa o mês mais recente do período selecionado (não necessariamente o último real)
+  var _sortedSel = MONTHS.slice().sort(function(a,b){
+    var PT=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    var pa=a.split('/'),pb=b.split('/');
+    return parseInt(pa[1])-parseInt(pb[1])||PT.indexOf(pa[0])-PT.indexOf(pb[0]);
+  });
+  var lastM = _sortedSel.length > 0 ? _sortedSel[_sortedSel.length-1] : REAL_MONTHS[0];
   // Mês anterior cronológico
   var _MPO=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   var _sortedAll=ALL_MONTHS.slice().sort(function(a,b){return _MPO.indexOf(a.split('/')[0])-_MPO.indexOf(b.split('/')[0]);});
@@ -4360,12 +4655,18 @@ function _renderApresentacao() {
   var prevM = _lIdx>0 ? _sortedAll[_lIdx-1] : REAL_MONTHS[1]||REAL_MONTHS[0];
   var units = LOJAS_UNITS.filter(function(u){return u!=='CONSOLIDADO'&&u!=='ESC';});
 
-  // Compute key metrics
+  // Compute key metrics — acumula todos os meses do período selecionado
   var totRL=0,totRN=0,prevRL=0,prevRN=0,nSup=0,nAbaixoBE=0;
+  var selMeses = _sortedSel.length > 0 ? _sortedSel : [lastM];
   units.forEach(function(u){
+    var sumRL=0, sumRN=0;
+    selMeses.forEach(function(m){
+      var mt = calcUnitMetrics(u, m);
+      sumRL += mt.rl; sumRN += mt.rn;
+    });
+    totRL += sumRL; totRN += sumRN;
     var cur=calcUnitMetrics(u,lastM);
     var prv=calcUnitMetrics(u,prevM||lastM);
-    totRL+=cur.rl; totRN+=cur.rn;
     prevRL+=prv.rl; prevRN+=prv.rn;
     if(cur.rn>0)nSup++;
     if(cur.be&&cur.rl<cur.be)nAbaixoBE++;
@@ -4381,9 +4682,26 @@ function _renderApresentacao() {
   var html='';
 
   // ── Slide 1: Visão Geral ──────────────────────────────────────────
+  var apresUnit = CU;
+  var apresUnitLabel = apresUnit === 'CONSOLIDADO' ? '' : (LOJAS_NAMES[apresUnit]||apresUnit);
+  var slideTitle = apresUnitLabel ? 'Visão Geral — ' + apresUnitLabel : 'Visão Geral da Rede';
+
+  // For unit-specific view, use that unit's metrics directly
+  if (apresUnit !== 'CONSOLIDADO') {
+    var umt = calcUnitMetrics(apresUnit, lastM), upmt = calcUnitMetrics(apresUnit, prevM||lastM);
+    totRL=umt.rl; totRN=umt.rn; prevRL=upmt.rl; prevRN=upmt.rn;
+    margem = totRL>0 ? totRN/totRL : 0;
+    varRL = prevRL>0 ? (totRL-prevRL)/prevRL : 0;
+    nSup = totRN>0 ? 1 : 0;
+    nAbaixoBE = (umt.be && umt.rl < umt.be) ? 1 : 0;
+  }
+
   html+='<div class="apres-slide" id="apresSlide0">';
-  html+='<div class="apres-slide-header"><div class="apres-slide-title">Visão Geral da Rede</div>';
-  html+='<div class="apres-slide-meta">'+( hasSim?'✏️ Com simulação · ':'')+lastM+'</div></div>';
+  var periodoLabel = selMeses.length > 1
+    ? selMeses[0] + ' – ' + lastM
+    : lastM;
+  html+='<div class="apres-slide-header"><div class="apres-slide-title">'+slideTitle+'</div>';
+  html+='<div class="apres-slide-meta">'+( hasSim?'✏️ Com simulação · ':'')+periodoLabel+'</div></div>';
   html+='<div class="apres-kpi-grid">';
   function kpi(lbl,val,isVal,trend,up){
     var cls=val>0?'pos':val<0?'neg':'neu';
@@ -5087,7 +5405,7 @@ loadConfig();
 // ── TABS ──────────────────────────────────────────────────────────────────
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(function(b,i){
-    b.classList.toggle('active', ['dre','lojas','lancamentos','matriz','variacoes','transversal','rateio','resultado-rateio','alertas','simulador','apresentacao'][i]===tab);
+    b.classList.toggle('active', ['dre','lojas','lancamentos','matriz','variacoes','transversal','breakeven','rateio','resultado-rateio','alertas','simulador','apresentacao'][i]===tab);
   });
   document.querySelector('main').classList.toggle('hidden', tab!=='dre');
   document.getElementById('painel-lojas').classList.toggle('hidden', tab!=='lojas');
@@ -5095,6 +5413,7 @@ function switchTab(tab) {
   document.getElementById('painel-matriz').classList.toggle('hidden', tab!=='matriz');
   document.getElementById('painel-variacoes').classList.toggle('hidden', tab!=='variacoes');
   document.getElementById('painel-transversal').classList.toggle('hidden', tab!=='transversal');
+  document.getElementById('painel-breakeven').classList.toggle('hidden', tab!=='breakeven');
   document.getElementById('painel-rateio').classList.toggle('hidden', tab!=='rateio');
   document.getElementById('painel-resultado-rateio').classList.toggle('hidden', tab!=='resultado-rateio');
   document.getElementById('painel-alertas').classList.toggle('hidden', tab!=='alertas');
@@ -5112,9 +5431,238 @@ function switchTab(tab) {
   if(tab==='variacoes') renderVariacoes();
   if(tab==='transversal'){ renderTransversal(); }
   if(tab==='rateio') renderRateio();
+  if(tab==='breakeven') renderBreakeven();
 }
 
-// ── LOJAS CARDS ───────────────────────────────────────────────────────────
+// ── BREAKEVEN ─────────────────────────────────────────────────────────────
+var _beChart = null;
+function renderBreakeven() {
+  var cronologico = document.getElementById('beShowProj') && document.getElementById('beShowProj').checked;
+  var meses = MONTHS.slice().reverse(); // segue o seletor de período
+  if (!cronologico) meses = meses.reverse(); // padrão: mais recente à esquerda
+  if (!meses.length) return;
+  var units = LOJAS_UNITS.filter(function(u){ return u !== 'CONSOLIDADO'; });
+  var fmtBE = function(v){ return v >= 1000 ? (v/1000).toFixed(1)+'k' : Math.round(v).toString(); };
+  var fmtR2 = function(v){ if(!v&&v!==0) return '—'; return 'R$ '+(Math.abs(v)/1000).toFixed(1)+'k'; };
+
+  // ── Métricas por unidade×mês ───────────────────────────────────────────
+  var metrics = {}; // unit → month → {rl, be, rn, ml}
+  units.forEach(function(u){
+    metrics[u] = {};
+    meses.forEach(function(m){ metrics[u][m] = calcUnitMetrics(u, m); });
+  });
+
+  // ── Gráfico: receita total com % de lojas com margem negativa ──────────
+  var posArr = [], negArr = [], cmvPctArr = [], lbls = [];
+  meses.forEach(function(m){
+    var pos = 0, neg = 0, totCMV = 0, totRL = 0;
+    units.forEach(function(u){
+      var mt = metrics[u][m];
+      if (mt.rl > 0) {
+        if (mt.rn < 0) neg += mt.rl; else pos += mt.rl;
+        totCMV += mt.cmv;
+        totRL  += mt.rl;
+      }
+    });
+    posArr.push(pos/1000); negArr.push(neg/1000);
+    cmvPctArr.push(totRL > 0 ? Math.round(totCMV/totRL*1000)/10 : null); // % 1 decimal
+    lbls.push(m);
+  });
+  var isLight = document.body.classList.contains('light');
+  var clrPos  = 'rgba(42,168,159,0.75)';
+  var clrNeg  = 'rgba(220,60,60,0.80)';
+  var clrGrid = isLight ? 'rgba(0,0,0,.08)' : 'rgba(255,255,255,.08)';
+  var clrTxt  = isLight ? '#333' : '#aaa';
+  if (_beChart) { try { _beChart.destroy(); } catch(e){} _beChart = null; }
+  var ctx = document.getElementById('beChartCanvas');
+  if (ctx) {
+    _beChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: lbls,
+        datasets: [
+          { label: 'Margem positiva', data: posArr, backgroundColor: clrPos, stack:'rev', borderRadius:3, yAxisID:'yVal' },
+          { label: 'Margem negativa', data: negArr, backgroundColor: clrNeg, stack:'rev', borderRadius:3, yAxisID:'yVal' },
+          {
+            label: '% CMV',
+            data: cmvPctArr,
+            type: 'line',
+            yAxisID: 'yPct',
+            borderColor: 'rgba(245,158,11,0.9)',
+            backgroundColor: 'rgba(245,158,11,0.15)',
+            pointBackgroundColor: 'rgba(245,158,11,1)',
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            borderWidth: 2.5,
+            tension: 0.35,
+            fill: false,
+            stack: undefined,
+            order: 0
+          }
+        ]
+      },
+      options: {
+        responsive:true, maintainAspectRatio:true,
+        plugins: {
+          legend: { display:true, labels:{ color:clrTxt, font:{size:10}, boxWidth:12 } },
+          tooltip: {
+            callbacks: {
+              afterBody: function(items){
+                var idx = items[0].dataIndex;
+                var tot = (posArr[idx]||0)+(negArr[idx]||0);
+                var pct = tot > 0 ? ((negArr[idx]||0)/tot*100).toFixed(1) : '0';
+                return pct+'% da receita de lojas c/ margem negativa';
+              }
+            }
+          },
+          datalabels: { display: false }
+        },
+        scales: {
+          x: { stacked:true, ticks:{ color:clrTxt, font:{size:9} }, grid:{ color:clrGrid } },
+          yVal: {
+            stacked: true,
+            position: 'left',
+            ticks:{ color:clrTxt, font:{size:9}, callback:function(v){ return 'R$'+v+'k'; } },
+            grid:{ color:clrGrid }
+          },
+          yPct: {
+            position: 'right',
+            min: 0, max: 100,
+            ticks:{
+              color: 'rgba(245,158,11,0.8)',
+              font:{size:9},
+              callback: function(v){ return v+'%'; }
+            },
+            grid:{ drawOnChartArea: false }
+          }
+        }
+      },
+      plugins: [{
+        id:'negpct',
+        afterDatasetsDraw: function(chart){
+          var ctx2 = chart.ctx;
+          var ds1 = chart.getDatasetMeta(1); // margem negativa bars
+          meses.forEach(function(_m, i){
+            var tot = (posArr[i]||0)+(negArr[i]||0);
+            if (!tot) return;
+            var pct = ((negArr[i]||0)/tot*100);
+            if (pct < 1) return;
+            var bar1 = ds1.data[i];
+            if (!bar1) return;
+            ctx2.save();
+            ctx2.font = 'bold 9px IBM Plex Mono,monospace';
+            ctx2.fillStyle = '#fff';
+            ctx2.textAlign = 'center';
+            ctx2.fillText(pct.toFixed(0)+'%', bar1.x, bar1.y + 11);
+            ctx2.restore();
+          });
+        }
+      }]
+    });
+  }
+
+  // ── Summary badge ──────────────────────────────────────────────────────
+  var lastM = meses[meses.length-1];
+  var nNegRL = units.filter(function(u){
+    var mt = metrics[u][lastM]; return mt && mt.rn < 0 && mt.rl > 0;
+  });
+  var nNeg = nNegRL.length;
+  var pctNegRL = (function(){
+    var tot = 0, neg = 0;
+    units.forEach(function(u){
+      var mt = metrics[u][lastM];
+      if (mt.rl > 0) { tot += mt.rl; if (mt.rn < 0) neg += mt.rl; }
+    });
+    return tot > 0 ? Math.round(neg/tot*100) : 0;
+  })();
+  var sumEl = document.getElementById('be-summary');
+  if (sumEl) sumEl.innerHTML = nNeg
+    ? '<span style="color:var(--red)">'
+      + nNeg + (nNeg===1?' unidade':' unidades') + ' com resultado negativo em ' + lastM
+      + (pctNegRL ? ' — <b>' + pctNegRL + '%</b> da receita total' : '')
+      + '</span>'
+    : '<span style="color:var(--accent)">Todas as unidades com resultado positivo em ' + lastM + '</span>';
+
+  // ── Tabela BE ──────────────────────────────────────────────────────────
+  // Encontrar máximo de RL por mês para highlight do melhor
+  var maxRL = {};
+  meses.forEach(function(m){
+    maxRL[m] = Math.max.apply(null, units.map(function(u){ return metrics[u][m].rl||0; }));
+  });
+
+  var isP = function(m){ return PROJ_MONTHS.indexOf(m) >= 0; };
+  var thStyle = 'padding:6px 12px;font-size:10px;font-family:"IBM Plex Mono",monospace;'
+    +'font-weight:700;text-align:right;white-space:nowrap;background:var(--surface);'
+    +'border-bottom:2px solid var(--border2);letter-spacing:.3px;';
+  var thPStyle = 'color:var(--accent3);border-bottom-color:var(--accent3);';
+
+  var html = '<table style="border-collapse:separate;border-spacing:0;min-width:600px;font-size:11px">';
+  // Header
+  html += '<thead><tr>'
+    +'<th style="'+thStyle+'text-align:left;min-width:130px">Unidade</th>'
+    +'<th style="'+thStyle+'color:var(--muted);min-width:54px">Linha</th>';
+  meses.forEach(function(m){
+    html += '<th style="'+thStyle+(isP(m)?thPStyle:'color:var(--muted2)')+'">'
+      +m+(isP(m)?' ▸':'')+'</th>';
+  });
+  html += '</tr></thead><tbody>';
+
+  units.forEach(function(u){
+    var name = LOJAS_NAMES[u]||u;
+    var hasAny = meses.some(function(m){ return metrics[u][m].rl > 0; });
+    if (!hasAny) return;
+    var rowspan = 'rowspan="2" style="padding:6px 12px;font-weight:700;font-size:11px;'
+      +'vertical-align:middle;border-bottom:2px solid var(--border);white-space:nowrap;'
+      +'color:var(--fg)"';
+
+    // Row 1: Receita (VENDA)
+    html += '<tr><td '+rowspan+'>'+name+'</td>'
+      +'<td style="padding:4px 12px;font-size:9px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;'
+      +'color:#7a5000;background:rgba(245,158,11,.08);border-left:2px solid rgba(245,158,11,.3)">VENDA</td>';
+    meses.forEach(function(m){
+      var mt = metrics[u][m];
+      var rl = mt.rl, be = mt.be;
+      var isMax = rl > 0 && rl === maxRL[m];
+      var bg='', fc='var(--fg)', fw='500';
+      if (rl > 0) {
+        if (mt.rn < 0)                  { bg='rgba(220,60,60,.15)';   fc='var(--red)'; fw='700'; }   // resultado negativo
+        else if (be && rl < be*1.1)     { bg='rgba(245,158,11,.15)';  fc='var(--accent3)'; fw='700'; } // acima do BE mas apertado
+        else                            { bg='rgba(42,168,159,.10)';   fc='var(--accent)'; }
+      }
+      if (isMax) { bg='rgba(245,200,0,.18)'; fc='#a07000'; fw='700'; }
+      var isProj = isP(m);
+      html += '<td style="padding:5px 12px;text-align:right;background:'+bg
+        +';color:'+fc+';font-weight:'+fw
+        +';border-left:1px solid var(--border);white-space:nowrap'
+        +(isProj?';opacity:.75':'')
+        +'">'+fmtR2(rl||0)+'</td>';
+    });
+    html += '</tr>';
+
+    // Row 2: Ponto de Equilíbrio (PE)
+    html += '<tr>'
+      +'<td style="padding:4px 12px;font-size:9px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;'
+      +'color:var(--muted2);border-bottom:2px solid var(--border);border-left:2px solid var(--border)">PE</td>';
+    meses.forEach(function(m){
+      var be = metrics[u][m].be;
+      html += '<td style="padding:5px 12px;text-align:right;color:var(--muted2);font-size:10px;'
+        +'border-left:1px solid var(--border);border-bottom:2px solid var(--border);white-space:nowrap">'
+        +(be ? fmtR2(be) : '—')+'</td>';
+    });
+    html += '</tr>';
+  });
+
+  html += '</tbody></table>';
+  // Legend
+  html += '<div style="display:flex;gap:16px;margin-top:12px;font-size:10px;font-family:\'IBM Plex Mono\',monospace;color:var(--muted);flex-wrap:wrap">'
+    +'<span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:rgba(220,60,60,.25);display:inline-block"></span> Resultado líquido negativo (rn &lt; 0)</span>'
+    +'<span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:rgba(245,158,11,.25);display:inline-block"></span> Positivo mas dentro de 10% do BE teórico</span>'
+    +'<span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:rgba(42,168,159,.20);display:inline-block"></span> Resultado positivo e acima do BE</span>'
+    +'<span style="display:flex;align-items:center;gap:5px"><span style="width:12px;height:12px;border-radius:3px;background:rgba(245,200,0,.30);display:inline-block"></span> Maior receita do mês</span>'
+    +'</div>';
+
+  document.getElementById('be-table-wrap').innerHTML = html;
+}
 var LOJAS_UNITS = ['CONSOLIDADO','01','02','03','04','05','06','07','08','09','10','11','12','15','16','17','18','ESC'];
 var LOJAS_NAMES = {
   'CONSOLIDADO':'Consolidado',
@@ -5838,17 +6386,8 @@ function mtzSave(){
   Object.keys(keyFlags).forEach(function(k){
     MATRIZ_ACTIVE[k]=keyFlags[k].any;
   });
-  // Rerender current visible tab
-  buildDRE();
-  renderKPI();
-  if(!document.getElementById('painel-lojas').classList.contains('hidden')) renderLojas();
-  if(!document.getElementById('painel-lancamentos').classList.contains('hidden')) renderLancamentos();
-  // Persist to localStorage
-  try{ localStorage.setItem('sinete_mtz_flags', JSON.stringify(MATRIZ_FLAGS)); }catch(e){}
-  try{ localStorage.setItem('sinete_mtz_rateavel', JSON.stringify(RATEAVEL_FLAGS)); }catch(e){}
-  try{ localStorage.setItem('sinete_mtz_rateavel_units', JSON.stringify(RATEAVEL_UNITS)); }catch(e){}
 
-  // Build RATEAVEL_ACTIVE: n2|n3 → bool
+  // Build RATEAVEL_ACTIVE: n2|n3 → bool  ← antes do buildDRE para calcProjRateio usar novo config
   RATEAVEL_ACTIVE = {};
   var keyRFlags={};
   MATRIZ_DATA.forEach(function(it,i){
@@ -5876,6 +6415,20 @@ function mtzSave(){
       else RATEAVEL_UNITS_ACTIVE[k] = RATEAVEL_UNITS_ACTIVE[k].concat(scope.filter(function(u){ return RATEAVEL_UNITS_ACTIVE[k].indexOf(u)<0; }));
     }
   });
+
+  // Recalcular rateio dos meses projetados com novo config (antes de buildDRE)
+  calcProjRateio();
+
+  // Rerender current visible tab
+  buildDRE();
+  renderKPI();
+  if(!document.getElementById('painel-lojas').classList.contains('hidden')) renderLojas();
+  if(!document.getElementById('painel-lancamentos').classList.contains('hidden')) renderLancamentos();
+  // Persist to localStorage
+  try{ localStorage.setItem('sinete_mtz_flags', JSON.stringify(MATRIZ_FLAGS)); }catch(e){}
+  try{ localStorage.setItem('sinete_mtz_rateavel', JSON.stringify(RATEAVEL_FLAGS)); }catch(e){}
+  try{ localStorage.setItem('sinete_mtz_rateavel_units', JSON.stringify(RATEAVEL_UNITS)); }catch(e){}
+
   // Visual feedback
   var btn = document.querySelector('.mtz-actions .lt-btn:last-child');
   if(btn){ var orig=btn.textContent; btn.textContent='Aplicado!'; setTimeout(function(){btn.innerHTML='&#10003; Aplicar';},1200); }
@@ -5894,11 +6447,17 @@ function mtzIsRateavel(n2, n3){
 function mtzIsActive(n2, n3){
   if(!MATRIZ_ACTIVE) return true;
   var k = (n2||'') + '|' + (n3||'');
-  // If key not in MATRIZ_ACTIVE at all, it means not in Matriz → show by default
-  if(MATRIZ_ACTIVE[k] === undefined) return true;
-  // If item has N3, check exact key
+  if(MATRIZ_ACTIVE[k] === undefined) {
+    // Item não está explicitamente na Matriz.
+    // Se o grupo N2 tem itens configurados, itens desconhecidos são OCULTOS (opt-in).
+    // Se o N2 não tem nenhuma configuração, mostrar por padrão (backward compat).
+    var n2Prefix = (n2||'') + '|';
+    var n2HasConfig = Object.keys(MATRIZ_ACTIVE).some(function(ak){
+      return ak.length > n2Prefix.length && ak.indexOf(n2Prefix) === 0;
+    });
+    return !n2HasConfig;
+  }
   if(n3 && n3!=='') return MATRIZ_ACTIVE[k] === true;
-  // If item has no N3 (group row), check the group key
   return MATRIZ_ACTIVE[(n2||'')+'|'] === true;
 }
 
@@ -6432,6 +6991,21 @@ function renderTransversal(){
   <div class="trv-table-wrap">
     <table class="trv-table" id="trvTable"></table>
   </div>
+</div>
+
+<div id="painel-breakeven" class="hidden" style="padding:20px 24px;overflow-x:auto">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap">
+    <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:700;letter-spacing:1px;color:var(--muted2)">⚖ BREAKEVEN POR UNIDADE</span>
+    <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px">
+      <input type="checkbox" id="beShowProj" onchange="renderBreakeven()" style="accent-color:var(--accent)"> Ordem cronológica (mais antigo primeiro)
+    </label>
+    <span id="be-summary" style="font-size:11px;font-family:'IBM Plex Mono',monospace;color:var(--accent3)"></span>
+  </div>
+  <div style="max-width:900px;margin-bottom:28px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px">
+    <div style="font-size:10px;font-family:'IBM Plex Mono',monospace;color:var(--muted);margin-bottom:10px;letter-spacing:.5px">RECEITA TOTAL — LOJAS COM MARGEM LÍQUIDA NEGATIVA</div>
+    <canvas id="beChartCanvas" height="120"></canvas>
+  </div>
+  <div id="be-table-wrap" style="overflow-x:auto"></div>
 </div>
 
 <div id="painel-rateio" class="rateio-panel hidden">
